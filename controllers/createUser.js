@@ -1,7 +1,7 @@
 const bcrypt = require("bcrypt");
-const jwt = require("jsonwebtoken");
 const { pool } = require("../db");
 const cloudinary = require("../utils/cloudinary");
+const { generateToken } = require("../utils/jwtUtils");
 const {
   getMissingFields,
   normalizeGender,
@@ -12,41 +12,43 @@ const {
   insertUser
 } = require("../utils/createUserUtils");
 
-require("dotenv").config();
-
-const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRY = "14d";
-
 exports.createUser = async (req, res) => {
   const client = await pool.connect();
+
+  const {
+    first_name, last_name, phone, email, dob,
+    street_address, city, state, country = "India",
+    password, gender, location_x, location_y
+  } = req.body;
+  const file = req.file;
+
+  const lat = parseFloat(location_x);
+  const lng = parseFloat(location_y);
+  const errors = [];
+
+  const missing = getMissingFields(req.body, file);
+  if (missing.length > 0) {
+    errors.push({ field: "general", message: "Missing required fields", details: missing });
+  }
+
+  if (email && isBlockedEmail(email)) {
+    errors.push({ field: "email", message: "Email domain is blocked" });
+  }
+
+  const normalizedGender = normalizeGender(gender);
+  if (gender && !normalizedGender) {
+    errors.push({ field: "gender", message: "Invalid gender. Use M, F, O, or C." });
+  }
+
+  if ((location_x || location_y) && !isValidCoordinate(lat, lng)) {
+    errors.push({ field: "location", message: "Invalid coordinates for location_x or location_y" });
+  }
+
+  if (errors.length > 0) {
+    return res.status(400).json({ error: "Validation failed", issues: errors });
+  }
+
   try {
-    const {
-      first_name, last_name, phone, email, dob,
-      street_address, city, state, country = "India",
-      password, gender, location_x, location_y
-    } = req.body;
-    const file = req.file;
-
-    const missingFields = getMissingFields(req.body, file);
-    if (missingFields.length > 0) {
-      return res.status(400).json({ error: "Missing required fields", details: missingFields });
-    }
-
-    if (isBlockedEmail(email)) {
-      return res.status(400).json({ error: "Email domain is blocked" });
-    }
-
-    const normalizedGender = normalizeGender(gender);
-    if (!normalizedGender) {
-      return res.status(400).json({ error: "Invalid gender. Use M, F, O, or C." });
-    }
-
-    const lat = parseFloat(location_x);
-    const lng = parseFloat(location_y);
-    if (!isValidCoordinate(lat, lng)) {
-      return res.status(400).json({ error: "Invalid coordinates" });
-    }
-
     let pfp_link;
     try {
       pfp_link = await uploadProfilePicture(file.buffer, cloudinary);
@@ -56,14 +58,23 @@ exports.createUser = async (req, res) => {
     }
 
     await client.query("BEGIN");
+
     const location_id = await insertLocation(client, street_address, city, state, country, lat, lng);
     const hash = await bcrypt.hash(password, 10);
     const user_id = await insertUser(client, {
-      first_name, last_name, phone, email, dob,
-      location_id, hash, normalizedGender, pfp_link
+      first_name,
+      last_name,
+      phone,
+      email,
+      dob,
+      location_id,
+      hash,
+      normalizedGender,
+      pfp_link,
     });
 
-    const token = jwt.sign({ user_id, email }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+    const token = generateToken({ user_id, email });
+
     await client.query("COMMIT");
 
     return res.status(201).json({ message: "User created successfully", token, user_id });
