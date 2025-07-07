@@ -1,5 +1,5 @@
 const bcrypt = require("bcrypt");
-const { pool } = require("../db");
+const { pool } = require("../utils/db");
 const cloudinary = require("../utils/cloudinary");
 const { generateToken } = require("../utils/jwtUtils");
 const {
